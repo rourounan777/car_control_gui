@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import rclpy                          # ROS2 客户端库
 from rclpy.node import Node           # ROS2 节点基类
+from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import String       # 使用 std_msgs/String 消息类型
 from ctypes import *                  # 用于加载 C 动态链接库及定义结构体
 import struct                         # 用于二进制数据打包
@@ -23,45 +24,44 @@ STATUS_OK = 1                         # 操作成功状态码
 # ------------------------- 结构体定义 -------------------------
 class BoardInfo(Structure):
     _fields_ = [
-        ("hw_Version", c_ushort),     # 硬件版本（2字节）
-        ("fw_Version", c_ushort),     # 固件版本（2字节）
-        ("dr_Version", c_ushort),     # 驱动版本（2字节）
-        ("in_Version", c_ushort),     # 接口版本（2字节）
-        ("irq_Num", c_ushort),        # 中断数量（2字节）
-        ("can_Num", c_byte),          # CAN 通道数量（1字节）
-        ("str_Serial_Num", c_byte * 20),  # 序列号（20字节）
-        ("str_hw_Type", c_byte * 40),     # 硬件类型（40字节）
-        ("Reserved", c_byte * 4)          # 保留字段（4字节）
+        ("hw_Version", c_ushort),     
+        ("fw_Version", c_ushort),     
+        ("dr_Version", c_ushort),     
+        ("in_Version", c_ushort),     
+        ("irq_Num", c_ushort),        
+        ("can_Num", c_byte),          
+        ("str_Serial_Num", c_byte * 20),
+        ("str_hw_Type", c_byte * 40),     
+        ("Reserved", c_byte * 4)          
     ]
 
 # 定义 CAN 数据帧结构体
 class CAN_OBJ(Structure):
     _fields_ = [
-        ("ID", c_uint),               # CAN 帧标识符
-        ("TimeStamp", c_uint),        # 时间戳
-        ("TimeFlag", c_byte),         # 时间标志
-        ("SendType", c_byte),         # 发送类型
-        ("RemoteFlag", c_byte),       # 远程帧标志（0 表示数据帧）
-        ("ExternFlag", c_byte),       # 扩展帧标志（0：标准帧，1：扩展帧）
-        ("DataLen", c_byte),          # 数据长度（0～8字节）
-        ("data", c_ubyte * 8),        # 数据内容，最多8字节
-        ("Reserved", c_byte * 3)      # 保留字段
+        ("ID", c_uint),               
+        ("TimeStamp", c_uint),        
+        ("TimeFlag", c_byte),         
+        ("SendType", c_byte),         
+        ("RemoteFlag", c_byte),       
+        ("ExternFlag", c_byte),       
+        ("DataLen", c_byte),          
+        ("data", c_ubyte * 8),        
+        ("Reserved", c_byte * 3)      
     ]
 
 # 定义 CAN 初始化配置结构体
 class INIT_CONFIG(Structure):
     _fields_ = [
-        ("acccode", c_uint32),        # 验收码
-        ("accmask", c_uint32),        # 屏蔽码
-        ("reserved", c_uint32),       # 保留字段
-        ("filter", c_byte),           # 滤波设置（0 或 1）
-        ("timing0", c_byte),          # 定时参数0（决定波特率）
-        ("timing1", c_byte),          # 定时参数1（决定波特率）
-        ("mode", c_byte)              # 工作模式（0 表示正常）
+        ("acccode", c_uint32),        
+        ("accmask", c_uint32),        
+        ("reserved", c_uint32),       
+        ("filter", c_byte),           
+        ("timing0", c_byte),          
+        ("timing1", c_byte),          
+        ("mode", c_byte)              
     ]
 
 # ------------------------- ECAN 类（封装 CAN 操作） -------------------------
-# 该类通过 ctypes 调用 libECanVci.so.1 驱动库中的函数，实现设备的打开、初始化、启动、发送和接收。
 class ECAN(object):
     def __init__(self):
         try:
@@ -91,10 +91,9 @@ class ECAN(object):
         return self.dll.Transmit(DeviceType, DeviceIndex, CanInd, byref(mcanobj), c_uint16(1)) if self.dll else 0
 
 # ------------------------- ROS2 节点：CarControlNode -------------------------
-# 该节点接收 ROS2 消息（车控制指令），构造符合协议的 CAN 数据帧，并通过 CAN 通道1发送出去。
 class CarControlNode(Node):
     def __init__(self):
-        super().__init__('car_control_gui_node')
+        super().__init__('control_node')
         self.ecan = ECAN()
         self.device_open = False
 
@@ -144,7 +143,6 @@ class CarControlNode(Node):
         return True
 
     def get_timing(self, baud):
-        # 根据波特率字符串返回对应的定时参数（timing0, timing1）
         timing = {
             "1M": (0x00, 0x14),
             "800k": (0x00, 0x16),
@@ -156,11 +154,9 @@ class CarControlNode(Node):
             "20k": (0x18, 0x1C),
             "10k": (0x31, 0x1C)
         }
-        # 默认返回 500k 参数
-        return timing.get(baud, (0x00, 0x1C))
+        return timing.get(baud, (0x01, 0x1C))
 
     def send_can_command(self, can_channel, can_obj):
-        # 调用 ECAN 库函数发送 CAN 数据帧
         if self.device_open:
             ret = self.ecan.Tramsmit(USBCAN2, DevIndex, can_channel, can_obj)
             if ret != STATUS_OK:
@@ -171,17 +167,12 @@ class CarControlNode(Node):
             self.get_logger().error("设备未打开!")
 
     def car_cmd_callback(self, msg):
-        # ROS2 消息回调函数，当接收到控制指令时被调用
-        command = msg.data.strip().lower()  # 将指令转换为小写，方便匹配
+        command = msg.data.strip().lower()
         self.get_logger().info(f"收到控制指令: {command}")
 
-        # 根据混控协议构造 8 字节数据包，格式为：
-        # 帧头 (2B) + 角速度 (2B) + 直行速度 (2B) + 校验和 (2B)
-        # 校验和 = 0xCDAB XOR (角速度【无符号】) XOR (直行速度【无符号】)
-        angular_speed = 0   # 角速度（转弯命令）
-        straight_speed = 0  # 直行速度
+        angular_speed = 0   
+        straight_speed = 0  
 
-        # 根据不同指令赋予示例数值（实际数值可根据需求调整，取值范围 -1000～1000）
         if command == "forward":
             angular_speed = 0
             straight_speed = 500
@@ -201,82 +192,77 @@ class CarControlNode(Node):
             self.get_logger().warn(f"未知指令: {command}")
             return
 
-        header = 0xCDAB  # 固定帧头
-        # 辅助函数：将有符号16位转换为无符号16位（取低16位）
+        header = 0xCDAB  
         def to_unsigned(val):
             return val & 0xFFFF
         ang_val = to_unsigned(angular_speed)
         str_val = to_unsigned(straight_speed)
-        checksum = header ^ ang_val ^ str_val  # 计算校验和
+        checksum = header ^ ang_val ^ str_val  
 
-        # 使用大端格式打包成 8 字节数据包
         packet = struct.pack(">HHHH", header, ang_val, str_val, checksum)
-        # 将构造好的数据包 HEX 字符串写入日志（同时也放入全局队列，供 GUI 显示）
         hex_str = packet.hex()
         self.get_logger().info(f"发送数据: {hex_str}")
         transmit_log_queue.put(f"指令: {command} -> {hex_str}")
 
-        # 构造 CAN 帧结构体，并填充数据
         can_obj = CAN_OBJ()
-        can_obj.ID = 0x1314           # 按协议使用扩展帧 ID 0x1314
+        can_obj.ID = 0x1314           
         can_obj.TimeStamp = 0
         can_obj.TimeFlag = 0
         can_obj.SendType = 0
-        can_obj.RemoteFlag = 0        # 数据帧（非远程帧）
-        can_obj.ExternFlag = 1        # 扩展帧
-        can_obj.DataLen = 8           # 数据长度为8字节
+        can_obj.RemoteFlag = 0        
+        can_obj.ExternFlag = 1        
+        can_obj.DataLen = 8           
         for i in range(8):
             can_obj.data[i] = packet[i]
 
-        # 通过 CAN 通道1发送数据帧
         self.send_can_command(Channel1, can_obj)
 
     def close_device(self):
-        # 关闭 CAN 设备，清理资源
         if self.device_open:
             self.ecan.CloseDevice(USBCAN2, DevIndex)
             self.device_open = False
             self.get_logger().info("CAN 设备已关闭")
 
 # ------------------------- GUI 部分 -------------------------
-# 创建一个简单的 Tkinter 窗口，用于显示通过 CAN 通道1 发送的数据（HEX 格式）
 class CANGui:
     def __init__(self, root):
         self.root = root
         self.root.title("CAN1 传输数据日志")
-        # 使用 Listbox 显示日志消息
         self.listbox = tk.Listbox(root, width=50, height=15)
         self.listbox.pack(padx=10, pady=10)
-        # 每隔100ms调用一次 update_log 检查队列中是否有新日志
         self.update_log()
 
     def update_log(self):
-        # 从全局队列中取出所有日志消息，并插入到 Listbox 中
         while not transmit_log_queue.empty():
             msg = transmit_log_queue.get()
             self.listbox.insert(END, msg)
-            self.listbox.yview(END)  # 自动滚动到最新消息
-        self.root.after(100, self.update_log)  # 继续定时检查
+            self.listbox.yview(END)
+        self.root.after(100, self.update_log)
 
 # ------------------------- 主函数 -------------------------
 def main():
-    rclpy.init()                     # 初始化 ROS2 客户端库
-    node = CarControlNode()          # 创建 ROS2 节点实例
+    rclpy.init()
+    node = CarControlNode()
+    # 使用 MultiThreadedExecutor 以便同时处理多个回调
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
 
-    # 创建 ROS2 线程，运行 rclpy.spin()，保证节点可以接收消息
-    ros_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    # 单独开启线程运行 ROS2 executor
+    ros_thread = threading.Thread(target=executor.spin, daemon=True)
     ros_thread.start()
 
-    # 创建 Tkinter GUI 窗口
+    # 在主线程启动 Tkinter GUI
     root = tk.Tk()
     gui = CANGui(root)
 
-    # 当 GUI 窗口关闭时，关闭 CAN 设备并关闭 ROS2
     def on_closing():
         node.close_device()
+        executor.shutdown()
         rclpy.shutdown()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
 
+if __name__ == '__main__':
+    main()

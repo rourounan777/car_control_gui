@@ -61,7 +61,6 @@ class INIT_CONFIG(Structure):
     ]
 
 # ------------------------- ECAN 类（封装 CAN 操作） -------------------------
-# 该类通过 ctypes 调用 libECanVci.so.1 驱动库中的函数，实现设备的打开、初始化、启动、发送和接收。
 class ECAN(object):
     def __init__(self):
         try:
@@ -91,10 +90,9 @@ class ECAN(object):
         return self.dll.Transmit(DeviceType, DeviceIndex, CanInd, byref(mcanobj), c_uint16(1)) if self.dll else 0
 
 # ------------------------- ROS2 节点：CarControlNode -------------------------
-# 该节点接收 ROS2 消息（车控制指令），构造符合协议的 CAN 数据帧，并通过 CAN 通道1发送出去。
 class CarControlNode(Node):
     def __init__(self):
-        super().__init__('car_control_gui_node')
+        super().__init__('control_gui_node')
         self.ecan = ECAN()
         self.device_open = False
 
@@ -239,24 +237,56 @@ class CarControlNode(Node):
             self.get_logger().info("CAN 设备已关闭")
 
 # ------------------------- GUI 部分 -------------------------
-# 创建一个简单的 Tkinter 窗口，用于显示通过 CAN 通道1 发送的数据（HEX 格式）
-class CANGui:
-    def __init__(self, root):
+class CarControlGUI:
+    def __init__(self, root, node):
         self.root = root
-        self.root.title("CAN1 传输数据日志")
-        # 使用 Listbox 显示日志消息
-        self.listbox = tk.Listbox(root, width=50, height=15)
-        self.listbox.pack(padx=10, pady=10)
-        # 每隔100ms调用一次 update_log 检查队列中是否有新日志
+        self.node = node  # ROS2 节点实例，用于发布指令
+        self.root.title("车辆控制")
+
+        # 创建 ROS2 发布器，发布到 'car_cmd' 话题
+        self.cmd_pub = self.node.create_publisher(String, 'car_cmd', 10)
+
+        # 创建控制按钮
+        btn_forward = tk.Button(root, text="前进", width=10, command=lambda: self.send_cmd("forward"))
+        btn_backward = tk.Button(root, text="后退", width=10, command=lambda: self.send_cmd("backward"))
+        btn_left = tk.Button(root, text="左转", width=10, command=lambda: self.send_cmd("left"))
+        btn_right = tk.Button(root, text="右转", width=10, command=lambda: self.send_cmd("right"))
+        btn_stop = tk.Button(root, text="停止", width=10, command=lambda: self.send_cmd("stop"))
+
+        # 使用 grid 布局安排按钮位置
+        btn_forward.grid(row=0, column=1, padx=5, pady=5)
+        btn_left.grid(row=1, column=0, padx=5, pady=5)
+        btn_stop.grid(row=1, column=1, padx=5, pady=5)
+        btn_right.grid(row=1, column=2, padx=5, pady=5)
+        btn_backward.grid(row=2, column=1, padx=5, pady=5)
+
+        # 创建 Listbox 显示 CAN 数据日志
+        self.listbox = tk.Listbox(root, width=50, height=10)
+        self.listbox.grid(row=3, column=0, columnspan=3, padx=10, pady=10)
+
+        # 启动定时更新日志
         self.update_log()
 
+    def send_cmd(self, cmd):
+        """发送控制指令到 ROS2 话题 'car_cmd'"""
+        msg = String()
+        msg.data = cmd
+        self.cmd_pub.publish(msg)
+        self.node.get_logger().info(f"发送指令: {cmd}")
+
     def update_log(self):
-        # 从全局队列中取出所有日志消息，并插入到 Listbox 中
+        """从全局队列中读取 CAN 数据日志并显示在 Listbox 中"""
         while not transmit_log_queue.empty():
             msg = transmit_log_queue.get()
             self.listbox.insert(END, msg)
-            self.listbox.yview(END)  # 自动滚动到最新消息
-        self.root.after(100, self.update_log)  # 继续定时检查
+            self.listbox.yview(END)  # 自动滚动到最新日志
+        self.root.after(100, self.update_log)  # 每 100ms 检查一次队列
+
+    def on_closing(self):
+        """窗口关闭时的清理操作"""
+        self.node.close_device()  # 关闭 CAN 设备
+        rclpy.shutdown()          # 关闭 ROS2
+        self.root.destroy()       # 销毁 GUI 窗口
 
 # ------------------------- 主函数 -------------------------
 def main():
@@ -269,14 +299,11 @@ def main():
 
     # 创建 Tkinter GUI 窗口
     root = tk.Tk()
-    gui = CANGui(root)
+    gui = CarControlGUI(root, node)  # 传入 ROS2 节点实例
 
-    # 当 GUI 窗口关闭时，关闭 CAN 设备并关闭 ROS2
-    def on_closing():
-        node.close_device()
-        rclpy.shutdown()
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_closing)
+    # 设置窗口关闭协议
+    root.protocol("WM_DELETE_WINDOW", gui.on_closing)
     root.mainloop()
 
+if __name__ == '__main__':
+    main()

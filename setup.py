@@ -23,6 +23,12 @@ setup(
             'usbcan_node = usbcan_node.usbcan_node:main',
             'car_control_node = usbcan_node.car_control_node:main',
             'car_control_gui_node = usbcan_node.car_control_gui_node:main',
+            'car_control_new_node = usbcan_node.car_control_new_node:main',
+            'control_node = usbcan_node.control_node:main',
+            'control_gui_node = usbcan_node.control_gui_node:main',
+            
+            
+            
         ],
     },
 )
